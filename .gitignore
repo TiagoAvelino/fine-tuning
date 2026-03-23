@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ML artifacts
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.gguf
+*.onnx
+checkpoints/
+outputs/
+runs/
+wandb/
+mlruns/
+
+# Data (keep structure, ignore large files)
+data/*.json
+data/*.jsonl
+data/*.csv
+data/*.parquet
+data/*.arrow
+!data/.gitkeep
+
+# HuggingFace cache
+.cache/
+
+# Environment
+.env
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

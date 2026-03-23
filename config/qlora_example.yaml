@@ -1,0 +1,62 @@
+# Example: QLoRA fine-tuning of Llama 3.1 8B on a single GPU
+#
+# Usage:
+#   python -m src.train --config config/qlora_example.yaml
+
+model:
+  name: "meta-llama/Llama-3.1-8B-Instruct"
+  attn_implementation: "sdpa"
+  quantization:
+    mode: "4bit"
+    quant_type: "nf4"
+    compute_dtype: "bfloat16"
+    double_quant: true
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  bias: "none"
+
+dataset:
+  # Option A: load from HuggingFace Hub
+  hub_name: "tatsu-lab/alpaca"
+  split: "train"
+  max_samples: 10000
+
+  # Option B: load from local file (comment out hub_name to use this)
+  # local_path: "data/train.jsonl"
+
+  template: "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:\n{output}"
+  text_field: "text"
+
+training:
+  output_dir: "./outputs/llama-3.1-8b-qlora"
+  epochs: 3
+  batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-4
+  lr_scheduler: "cosine"
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  max_seq_length: 2048
+  max_grad_norm: 0.3
+  bf16: true
+  gradient_checkpointing: true
+  optimizer: "paged_adamw_8bit"
+  packing: false
+  logging_steps: 10
+  save_strategy: "steps"
+  save_steps: 100
+  save_total_limit: 3
+  eval_strategy: "no"
+  report_to: "tensorboard"
+  seed: 42

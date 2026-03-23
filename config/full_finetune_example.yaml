@@ -1,0 +1,54 @@
+# Example: Full-precision LoRA fine-tuning (no quantization)
+# Requires more VRAM but produces higher quality adapters.
+#
+# Usage:
+#   python -m src.train --config config/full_finetune_example.yaml
+
+model:
+  name: "meta-llama/Llama-3.1-8B-Instruct"
+  attn_implementation: "sdpa"
+  # No quantization — model loads in bfloat16
+
+lora:
+  r: 32
+  alpha: 64
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  bias: "none"
+
+dataset:
+  hub_name: "tatsu-lab/alpaca"
+  split: "train"
+  max_samples: 10000
+  template: "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:\n{output}"
+  text_field: "text"
+
+training:
+  output_dir: "./outputs/llama-3.1-8b-lora"
+  epochs: 3
+  batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 1.0e-4
+  lr_scheduler: "cosine"
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  max_seq_length: 2048
+  max_grad_norm: 0.3
+  bf16: true
+  gradient_checkpointing: true
+  optimizer: "adamw_torch"
+  packing: false
+  logging_steps: 10
+  save_strategy: "steps"
+  save_steps: 200
+  save_total_limit: 3
+  eval_strategy: "no"
+  report_to: "tensorboard"
+  seed: 42
