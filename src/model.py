@@ -1,5 +1,6 @@
 """Model loading with quantization and LoRA adapter configuration."""
 
+import logging
 import torch
 from transformers import (
     AutoModelForCausalLM,
@@ -15,12 +16,20 @@ from peft import (
     TaskType,
 )
 
+logger = logging.getLogger(__name__)
+
+DEFAULT_TARGET_MODULES = [
+    "q_proj", "k_proj", "v_proj", "o_proj",
+    "gate_proj", "up_proj", "down_proj",
+]
+
 
 def load_tokenizer(model_name: str) -> PreTrainedTokenizer:
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer.padding_side = "right"
     return tokenizer
 
 
@@ -43,6 +52,8 @@ def load_base_model(config: dict) -> PreTrainedModel:
     elif quant_mode == "8bit":
         bnb_config = BitsAndBytesConfig(load_in_8bit=True)
 
+    logger.info("Loading model: %s (quantization: %s)", model_name, quant_mode or "none")
+
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         quantization_config=bnb_config,
@@ -55,6 +66,8 @@ def load_base_model(config: dict) -> PreTrainedModel:
     if bnb_config is not None:
         model = prepare_model_for_kbit_training(model)
 
+    total_params = sum(p.numel() for p in model.parameters())
+    logger.info("Base model parameters: %s", f"{total_params:,}")
     return model
 
 
@@ -67,9 +80,7 @@ def apply_lora(model: PreTrainedModel, config: dict) -> PreTrainedModel:
         r=lora_cfg.get("r", 16),
         lora_alpha=lora_cfg.get("alpha", 32),
         lora_dropout=lora_cfg.get("dropout", 0.05),
-        target_modules=lora_cfg.get(
-            "target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]
-        ),
+        target_modules=lora_cfg.get("target_modules", DEFAULT_TARGET_MODULES),
         bias=lora_cfg.get("bias", "none"),
     )
 

@@ -1,0 +1,574 @@
+# PIPELINE DEFINITION
+# Name: ocp-llm-fine-tuning
+# Description: Fine-tune a causal LLM (TinyLlama/Mistral) with QLoRA on OpenShift troubleshooting data
+# Inputs:
+#    base_model: str [Default: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0']
+#    batch_size: str [Default: '4']
+#    learning_rate: str [Default: '0.0002']
+#    lora_r: str [Default: '32']
+#    max_seq_length: str [Default: '1024']
+#    num_epochs: str [Default: '3']
+#    s3_adapter_prefix: str [Default: 'ocp-llm/tinyllama-qlora/latest']
+#    s3_config_key: str [Default: 'config/ocp-instruct.yaml']
+#    s3_dataset_key: str [Default: 'data/ocp-instructions.jsonl']
+#    s3_merged_prefix: str [Default: 'ocp-llm/tinyllama-merged/latest']
+components:
+  comp-download-config:
+    executorLabel: exec-download-config
+    inputDefinitions:
+      parameters:
+        s3_key:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        config_file:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-download-dataset:
+    executorLabel: exec-download-dataset
+    inputDefinitions:
+      parameters:
+        s3_key:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        dataset_file:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-merge-model:
+    executorLabel: exec-merge-model
+    inputDefinitions:
+      artifacts:
+        model_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+      parameters:
+        base_model:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        merged_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-prepare-dataset:
+    executorLabel: exec-prepare-dataset
+    inputDefinitions:
+      artifacts:
+        raw_dataset_file:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        normalized_dataset_file:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-train-llm:
+    executorLabel: exec-train-llm
+    inputDefinitions:
+      artifacts:
+        config_file:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+        dataset_file:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+      parameters:
+        base_model:
+          parameterType: STRING
+        batch_size:
+          parameterType: STRING
+        learning_rate:
+          parameterType: STRING
+        lora_r:
+          parameterType: STRING
+        max_seq_length:
+          parameterType: STRING
+        num_epochs:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        model_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-upload-model:
+    executorLabel: exec-upload-model
+    inputDefinitions:
+      artifacts:
+        model_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+      parameters:
+        prefix:
+          parameterType: STRING
+  comp-upload-model-2:
+    executorLabel: exec-upload-model-2
+    inputDefinitions:
+      artifacts:
+        model_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+      parameters:
+        prefix:
+          parameterType: STRING
+  comp-validate-gpu:
+    executorLabel: exec-validate-gpu
+deploymentSpec:
+  executors:
+    exec-download-config:
+      container:
+        args:
+        - mkdir -p $(dirname "$1") && python3 -c 'import boto3,os,sys;from botocore.client
+          import Config;out=sys.argv[1];key=sys.argv[2];os.makedirs(os.path.dirname(out)
+          or ".",exist_ok=True);s3=boto3.client("s3",endpoint_url=os.environ["AWS_S3_ENDPOINT"],aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],config=Config(signature_version="s3v4"));bucket=os.environ.get("AWS_S3_BUCKET","pipelines");s3.download_file(bucket,key,out);print(f"Downloaded
+          s3://{bucket}/{key} ({os.path.getsize(out)} bytes)")' "$1" "$2"
+        - --
+        - '{{$.outputs.artifacts[''config_file''].path}}'
+        - '{{$.inputs.parameters[''s3_key'']}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/ocp-llm-upload:latest
+    exec-download-dataset:
+      container:
+        args:
+        - mkdir -p $(dirname "$1") && python3 -c 'import boto3,os,sys;from botocore.client
+          import Config;out=sys.argv[1];key=sys.argv[2];os.makedirs(os.path.dirname(out)
+          or ".",exist_ok=True);s3=boto3.client("s3",endpoint_url=os.environ["AWS_S3_ENDPOINT"],aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],config=Config(signature_version="s3v4"));bucket=os.environ.get("AWS_S3_BUCKET","pipelines");s3.download_file(bucket,key,out);print(f"Downloaded
+          s3://{bucket}/{key} ({os.path.getsize(out)} bytes)")' "$1" "$2"
+        - --
+        - '{{$.outputs.artifacts[''dataset_file''].path}}'
+        - '{{$.inputs.parameters[''s3_key'']}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/ocp-llm-upload:latest
+    exec-merge-model:
+      container:
+        args:
+        - set -e;ADAPTER_DIR="$1/final/final";BASE_MODEL="$2";MERGED_DIR="$3";python3
+          -c 'from src.inference import merge_and_export;import sys;merge_and_export(sys.argv[1],
+          sys.argv[2], sys.argv[3])' "${BASE_MODEL}" "${ADAPTER_DIR}" "${MERGED_DIR}"
+        - --
+        - '{{$.inputs.artifacts[''model_dir''].path}}'
+        - '{{$.inputs.parameters[''base_model'']}}'
+        - '{{$.outputs.artifacts[''merged_dir''].path}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/ocp-llm-train:latest
+        resources:
+          accelerator:
+            count: '1'
+            resourceCount: '1'
+            resourceType: nvidia.com/gpu
+            type: nvidia.com/gpu
+    exec-prepare-dataset:
+      container:
+        args:
+        - "\nset -e\npython3 - <<'PY' \"$1\" \"$2\"\nimport json\nimport os\nimport\
+          \ sys\n\nsrc_path = sys.argv[1]\ndst_path = sys.argv[2]\n\nos.makedirs(os.path.dirname(dst_path)\
+          \ or \".\", exist_ok=True)\n\ndef to_response_text(final_response: dict)\
+          \ -> str:\n    category = final_response.get(\"category\", \"\")\n    sub_cause\
+          \ = final_response.get(\"sub_cause\", \"\")\n    confidence = final_response.get(\"\
+          confidence\", \"\")\n    explanation = final_response.get(\"explanation\"\
+          , \"\")\n\n    fix_items = final_response.get(\"fix\", []) or []\n    commands\
+          \ = final_response.get(\"commands\", []) or []\n    verification = final_response.get(\"\
+          verification\", \"\")\n\n    parts = []\n\n    if category:\n        parts.append(f\"\
+          Category: {category}\")\n    if sub_cause:\n        parts.append(f\"Sub-cause:\
+          \ {sub_cause}\")\n    if confidence:\n        parts.append(f\"Confidence:\
+          \ {confidence}\")\n    if explanation:\n        parts.append(f\"Explanation:\
+          \ {explanation}\")\n\n    if fix_items:\n        parts.append(\"Fix:\")\n\
+          \        parts.extend(f\"- {item}\" for item in fix_items)\n\n    if commands:\n\
+          \        parts.append(\"Commands:\")\n        parts.extend(f\"- {cmd}\"\
+          \ for cmd in commands)\n\n    if verification:\n        parts.append(f\"\
+          Verification: {verification}\")\n\n    return \"\\n\".join(parts).strip()\n\
+          \ncount_in = 0\ncount_out = 0\nskipped = 0\n\nwith open(src_path, \"r\"\
+          , encoding=\"utf-8\") as src, open(dst_path, \"w\", encoding=\"utf-8\")\
+          \ as dst:\n    for line_number, line in enumerate(src, start=1):\n     \
+          \   line = line.strip()\n        if not line:\n            continue\n\n\
+          \        count_in += 1\n\n        try:\n            record = json.loads(line)\n\
+          \        except json.JSONDecodeError as exc:\n            print(f\"Skipping\
+          \ line {line_number}: invalid JSON ({exc})\")\n            skipped += 1\n\
+          \            continue\n\n        source_case = record.get(\"source_case\"\
+          , {}) or {}\n        agent_example = record.get(\"agent_training_example\"\
+          , {}) or {}\n        final_response = agent_example.get(\"final_response\"\
+          , {}) or {}\n\n        instruction = (\n            agent_example.get(\"\
+          user_request\")\n            or source_case.get(\"instruction\")\n     \
+          \       or \"\"\n        ).strip()\n\n        response = to_response_text(final_response)\n\
+          \n        if not instruction or not response:\n            print(\n    \
+          \            f\"Skipping line {line_number}: missing instruction or response\
+          \ \"\n                f\"(instruction={bool(instruction)}, response={bool(response)})\"\
+          \n            )\n            skipped += 1\n            continue\n\n    \
+          \    normalized = {\n            \"instruction\": instruction,\n       \
+          \     \"response\": response,\n        }\n        dst.write(json.dumps(normalized,\
+          \ ensure_ascii=False) + \"\\n\")\n        count_out += 1\n\nprint(f\"Normalized\
+          \ dataset written to {dst_path}\")\nprint(f\"Input records: {count_in}\"\
+          )\nprint(f\"Output records: {count_out}\")\nprint(f\"Skipped records: {skipped}\"\
+          )\nPY\n            "
+        - --
+        - '{{$.inputs.artifacts[''raw_dataset_file''].path}}'
+        - '{{$.outputs.artifacts[''normalized_dataset_file''].path}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/ocp-llm-train:latest
+    exec-train-llm:
+      container:
+        args:
+        - "\nset -e\nDATASET_FILE=\"$1\"\nCONFIG_FILE=\"$2\"\nBASE_MODEL=\"$3\"\n\
+          OUTPUT_DIR=\"$4\"\nNUM_EPOCHS=\"$5\"\nBATCH_SIZE=\"$6\"\nLR=\"$7\"\nLORA_R=\"\
+          $8\"\nMAX_SEQ=\"$9\"\n\npython3 - <<'PY' \"${CONFIG_FILE}\" \"${DATASET_FILE}\"\
+          \ \"${BASE_MODEL}\" \"${OUTPUT_DIR}/final\" \"${NUM_EPOCHS}\" \"${BATCH_SIZE}\"\
+          \ \"${LR}\" \"${LORA_R}\" \"${MAX_SEQ}\"\nimport yaml\nimport sys\n\ncfg_path,\
+          \ ds_path, model, out, ep, bs, lr, r, seq = sys.argv[1:]\n\nwith open(cfg_path,\
+          \ \"r\", encoding=\"utf-8\") as f:\n    config = yaml.safe_load(f)\n\nconfig[\"\
+          dataset\"][\"local_path\"] = ds_path\nconfig[\"dataset\"][\"instruction_field\"\
+          ] = \"instruction\"\nconfig[\"dataset\"][\"response_field\"] = \"response\"\
+          \nconfig[\"model\"][\"name\"] = model\nconfig[\"training\"][\"output_dir\"\
+          ] = out\nconfig[\"training\"][\"epochs\"] = int(ep)\nconfig[\"training\"\
+          ][\"batch_size\"] = int(bs)\nconfig[\"training\"][\"learning_rate\"] = float(lr)\n\
+          config[\"lora\"][\"r\"] = int(r)\nconfig[\"training\"][\"max_seq_length\"\
+          ] = int(seq)\n\nwith open(cfg_path, \"w\", encoding=\"utf-8\") as f:\n \
+          \   yaml.dump(config, f)\n\nprint(\"Config patched:\\n\" + yaml.dump(config,\
+          \ sort_keys=False))\nPY\n\npython3 - <<'PY'\nimport torch\n\nprint(\"Pre-training\
+          \ CUDA check\")\nprint(\"cuda available:\", torch.cuda.is_available())\n\
+          print(\"device count:\", torch.cuda.device_count())\n\nif not torch.cuda.is_available():\n\
+          \    raise RuntimeError(\"CUDA is not available inside training step.\"\
+          )\n\nidx = torch.cuda.current_device()\nprint(\"current device:\", idx)\n\
+          print(\"device name:\", torch.cuda.get_device_name(idx))\nPY\n\npython -m\
+          \ src.train --config \"${CONFIG_FILE}\"\n            "
+        - --
+        - '{{$.inputs.artifacts[''dataset_file''].path}}'
+        - '{{$.inputs.artifacts[''config_file''].path}}'
+        - '{{$.inputs.parameters[''base_model'']}}'
+        - '{{$.outputs.artifacts[''model_dir''].path}}'
+        - '{{$.inputs.parameters[''num_epochs'']}}'
+        - '{{$.inputs.parameters[''batch_size'']}}'
+        - '{{$.inputs.parameters[''learning_rate'']}}'
+        - '{{$.inputs.parameters[''lora_r'']}}'
+        - '{{$.inputs.parameters[''max_seq_length'']}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/ocp-llm-train:latest
+        resources:
+          accelerator:
+            count: '1'
+            resourceCount: '1'
+            resourceType: nvidia.com/gpu
+            type: nvidia.com/gpu
+    exec-upload-model:
+      container:
+        args:
+        - python upload_artifacts.py --local-dir "$1" --bucket "${AWS_S3_BUCKET:-pipelines}"
+          --prefix "$2"
+        - --
+        - '{{$.inputs.artifacts[''model_dir''].path}}'
+        - '{{$.inputs.parameters[''prefix'']}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/ocp-llm-upload:latest
+    exec-upload-model-2:
+      container:
+        args:
+        - python upload_artifacts.py --local-dir "$1" --bucket "${AWS_S3_BUCKET:-pipelines}"
+          --prefix "$2"
+        - --
+        - '{{$.inputs.artifacts[''model_dir''].path}}'
+        - '{{$.inputs.parameters[''prefix'']}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/ocp-llm-upload:latest
+    exec-validate-gpu:
+      container:
+        args:
+        - "\nset -e\npython3 - <<'PY'\nimport sys\nimport torch\n\nprint(\"torch version:\"\
+          , torch.__version__)\nprint(\"cuda available:\", torch.cuda.is_available())\n\
+          print(\"device count:\", torch.cuda.device_count())\n\nif not torch.cuda.is_available():\n\
+          \    raise RuntimeError(\"CUDA is not available. Training would run on CPU.\"\
+          )\n\nidx = torch.cuda.current_device()\nprint(\"current device:\", idx)\n\
+          print(\"device name:\", torch.cuda.get_device_name(idx))\nprint(\"GPU validation\
+          \ passed.\")\nPY\n            "
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/ocp-llm-train:latest
+        resources:
+          accelerator:
+            count: '1'
+            resourceCount: '1'
+            resourceType: nvidia.com/gpu
+            type: nvidia.com/gpu
+pipelineInfo:
+  description: Fine-tune a causal LLM (TinyLlama/Mistral) with QLoRA on OpenShift
+    troubleshooting data
+  name: ocp-llm-fine-tuning
+root:
+  dag:
+    tasks:
+      download-config:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-download-config
+        inputs:
+          parameters:
+            s3_key:
+              componentInputParameter: s3_config_key
+        taskInfo:
+          name: download-config
+      download-dataset:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-download-dataset
+        inputs:
+          parameters:
+            s3_key:
+              componentInputParameter: s3_dataset_key
+        taskInfo:
+          name: download-dataset
+      merge-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-merge-model
+        dependentTasks:
+        - train-llm
+        inputs:
+          artifacts:
+            model_dir:
+              taskOutputArtifact:
+                outputArtifactKey: model_dir
+                producerTask: train-llm
+          parameters:
+            base_model:
+              componentInputParameter: base_model
+        taskInfo:
+          name: merge-model
+      prepare-dataset:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-prepare-dataset
+        dependentTasks:
+        - download-dataset
+        inputs:
+          artifacts:
+            raw_dataset_file:
+              taskOutputArtifact:
+                outputArtifactKey: dataset_file
+                producerTask: download-dataset
+        taskInfo:
+          name: prepare-dataset
+      train-llm:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train-llm
+        dependentTasks:
+        - download-config
+        - prepare-dataset
+        - validate-gpu
+        inputs:
+          artifacts:
+            config_file:
+              taskOutputArtifact:
+                outputArtifactKey: config_file
+                producerTask: download-config
+            dataset_file:
+              taskOutputArtifact:
+                outputArtifactKey: normalized_dataset_file
+                producerTask: prepare-dataset
+          parameters:
+            base_model:
+              componentInputParameter: base_model
+            batch_size:
+              componentInputParameter: batch_size
+            learning_rate:
+              componentInputParameter: learning_rate
+            lora_r:
+              componentInputParameter: lora_r
+            max_seq_length:
+              componentInputParameter: max_seq_length
+            num_epochs:
+              componentInputParameter: num_epochs
+        taskInfo:
+          name: train-llm
+      upload-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-upload-model
+        dependentTasks:
+        - train-llm
+        inputs:
+          artifacts:
+            model_dir:
+              taskOutputArtifact:
+                outputArtifactKey: model_dir
+                producerTask: train-llm
+          parameters:
+            prefix:
+              componentInputParameter: s3_adapter_prefix
+        taskInfo:
+          name: upload-model
+      upload-model-2:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-upload-model-2
+        dependentTasks:
+        - merge-model
+        inputs:
+          artifacts:
+            model_dir:
+              taskOutputArtifact:
+                outputArtifactKey: merged_dir
+                producerTask: merge-model
+          parameters:
+            prefix:
+              componentInputParameter: s3_merged_prefix
+        taskInfo:
+          name: upload-model-2
+      validate-gpu:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-validate-gpu
+        taskInfo:
+          name: validate-gpu
+  inputDefinitions:
+    parameters:
+      base_model:
+        defaultValue: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+        isOptional: true
+        parameterType: STRING
+      batch_size:
+        defaultValue: '4'
+        isOptional: true
+        parameterType: STRING
+      learning_rate:
+        defaultValue: '0.0002'
+        isOptional: true
+        parameterType: STRING
+      lora_r:
+        defaultValue: '32'
+        isOptional: true
+        parameterType: STRING
+      max_seq_length:
+        defaultValue: '1024'
+        isOptional: true
+        parameterType: STRING
+      num_epochs:
+        defaultValue: '3'
+        isOptional: true
+        parameterType: STRING
+      s3_adapter_prefix:
+        defaultValue: ocp-llm/tinyllama-qlora/latest
+        isOptional: true
+        parameterType: STRING
+      s3_config_key:
+        defaultValue: config/ocp-instruct.yaml
+        isOptional: true
+        parameterType: STRING
+      s3_dataset_key:
+        defaultValue: data/ocp-instructions.jsonl
+        isOptional: true
+        parameterType: STRING
+      s3_merged_prefix:
+        defaultValue: ocp-llm/tinyllama-merged/latest
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.0
+---
+platforms:
+  kubernetes:
+    deploymentSpec:
+      executors:
+        exec-download-config:
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_S3_ENDPOINT
+              secretKey: AWS_S3_ENDPOINT
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: AWS_ACCESS_KEY_ID
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: AWS_SECRET_ACCESS_KEY
+            - envVar: AWS_DEFAULT_REGION
+              secretKey: AWS_DEFAULT_REGION
+            - envVar: AWS_S3_BUCKET
+              secretKey: AWS_S3_BUCKET
+            optional: false
+            secretName: minio-s3-connection
+            secretNameParameter:
+              runtimeValue:
+                constant: minio-s3-connection
+        exec-download-dataset:
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_S3_ENDPOINT
+              secretKey: AWS_S3_ENDPOINT
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: AWS_ACCESS_KEY_ID
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: AWS_SECRET_ACCESS_KEY
+            - envVar: AWS_DEFAULT_REGION
+              secretKey: AWS_DEFAULT_REGION
+            - envVar: AWS_S3_BUCKET
+              secretKey: AWS_S3_BUCKET
+            optional: false
+            secretName: minio-s3-connection
+            secretNameParameter:
+              runtimeValue:
+                constant: minio-s3-connection
+        exec-upload-model:
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_S3_ENDPOINT
+              secretKey: AWS_S3_ENDPOINT
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: AWS_ACCESS_KEY_ID
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: AWS_SECRET_ACCESS_KEY
+            - envVar: AWS_DEFAULT_REGION
+              secretKey: AWS_DEFAULT_REGION
+            - envVar: AWS_S3_BUCKET
+              secretKey: AWS_S3_BUCKET
+            optional: false
+            secretName: minio-s3-connection
+            secretNameParameter:
+              runtimeValue:
+                constant: minio-s3-connection
+        exec-upload-model-2:
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_S3_ENDPOINT
+              secretKey: AWS_S3_ENDPOINT
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: AWS_ACCESS_KEY_ID
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: AWS_SECRET_ACCESS_KEY
+            - envVar: AWS_DEFAULT_REGION
+              secretKey: AWS_DEFAULT_REGION
+            - envVar: AWS_S3_BUCKET
+              secretKey: AWS_S3_BUCKET
+            optional: false
+            secretName: minio-s3-connection
+            secretNameParameter:
+              runtimeValue:
+                constant: minio-s3-connection

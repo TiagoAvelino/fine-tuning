@@ -1,0 +1,62 @@
+# Fine-tuning config for OpenShift troubleshooting LLM
+# Uses QLoRA (4-bit) on Mistral-7B-Instruct-v0.3
+# Requires ~16GB VRAM (T4/A10/A100)
+#
+# Run:
+#   python -m src.train --config config/ocp-instruct-mistral.yaml
+
+model:
+  name: "mistralai/Mistral-7B-Instruct-v0.3"
+  attn_implementation: "sdpa"
+  quantization:
+    mode: "4bit"
+    quant_type: "nf4"
+    compute_dtype: "bfloat16"
+    double_quant: true
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  bias: "none"
+
+dataset:
+  local_path: "data/ocp-instructions.jsonl"
+  instruction_field: "instruction"
+  response_field: "response"
+  eval_ratio: 0.1
+  max_samples: 0
+
+training:
+  output_dir: "outputs/ocp-mistral-qlora"
+  epochs: 2
+  batch_size: 2
+  eval_batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 1.0e-4
+  lr_scheduler: "cosine"
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  max_seq_length: 2048
+  bf16: true
+  fp16: false
+  gradient_checkpointing: true
+  optimizer: "paged_adamw_8bit"
+  max_grad_norm: 0.3
+  packing: false
+  logging_steps: 10
+  save_strategy: "steps"
+  save_steps: 100
+  save_total_limit: 3
+  eval_strategy: "steps"
+  eval_steps: 100
+  report_to: "tensorboard"
+  seed: 42

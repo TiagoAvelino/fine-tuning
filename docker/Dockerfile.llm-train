@@ -1,0 +1,33 @@
+FROM registry.access.redhat.com/ubi9/python-312:latest
+
+LABEL name="ocp-llm/train" \
+      description="Fine-tune a causal LLM with QLoRA for OpenShift troubleshooting"
+
+USER 0
+
+RUN pip install --no-cache-dir \
+    torch \
+    transformers \
+    datasets \
+    peft \
+    trl \
+    accelerate \
+    bitsandbytes \
+    safetensors \
+    sentencepiece \
+    protobuf \
+    scipy \
+    pyyaml \
+    tensorboard
+
+USER 1001
+
+COPY src/__init__.py   /opt/app-root/src/src/__init__.py
+COPY src/data.py       /opt/app-root/src/src/data.py
+COPY src/model.py      /opt/app-root/src/src/model.py
+COPY src/train.py      /opt/app-root/src/src/train.py
+COPY src/inference.py  /opt/app-root/src/src/inference.py
+
+WORKDIR /opt/app-root/src
+
+ENTRYPOINT ["python", "-m", "src.train"]

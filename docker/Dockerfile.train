@@ -1,0 +1,20 @@
+FROM registry.access.redhat.com/ubi9/python-312:latest
+
+LABEL name="kcs-classifier/train" \
+      description="Train a Hugging Face text classifier (GPU-ready)"
+
+USER 0
+RUN pip install --no-cache-dir \
+    torch \
+    transformers \
+    datasets \
+    evaluate \
+    accelerate \
+    scikit-learn
+USER 1001
+
+COPY src/train_classifier.py /opt/app-root/src/train_classifier.py
+
+WORKDIR /opt/app-root/src
+
+ENTRYPOINT ["python", "train_classifier.py"]

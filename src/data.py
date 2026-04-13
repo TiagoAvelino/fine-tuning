@@ -1,15 +1,21 @@
-"""Dataset loading and preprocessing for LLM fine-tuning."""
+"""Dataset loading, chat formatting, and train/eval splitting for LLM fine-tuning."""
 
+import json
+import logging
 from datasets import load_dataset, Dataset
 from transformers import PreTrainedTokenizer
 
+logger = logging.getLogger(__name__)
+
+SYSTEM_PROMPT = (
+    "You are an OpenShift and Kubernetes troubleshooting expert. "
+    "Given a problem description, diagnose the issue and respond with a JSON object "
+    "containing: category, sub_cause, confidence, explanation, fix, commands, verification."
+)
+
 
 def load_training_data(config: dict) -> Dataset:
-    """Load dataset from local files or HuggingFace Hub.
-
-    Supports JSON/JSONL files from local path or S3-backed storage,
-    and datasets from the HuggingFace Hub.
-    """
+    """Load dataset from local JSONL/JSON file or HuggingFace Hub."""
     source = config["dataset"]
 
     if source.get("hub_name"):
@@ -32,53 +38,70 @@ def load_training_data(config: dict) -> Dataset:
     if source.get("max_samples"):
         dataset = dataset.select(range(min(source["max_samples"], len(dataset))))
 
+    logger.info("Loaded dataset: %d samples", len(dataset))
     return dataset
 
 
-def format_instruction(sample: dict, template: str) -> str:
-    """Apply a chat/instruction template to a single sample.
+def split_dataset(dataset: Dataset, eval_ratio: float = 0.1, seed: int = 42):
+    """Split into train and eval datasets."""
+    if eval_ratio <= 0:
+        return dataset, None
 
-    The template uses Python format-string syntax, e.g.:
-      "### Instruction:\\n{instruction}\\n### Response:\\n{output}"
+    split = dataset.train_test_split(test_size=eval_ratio, seed=seed)
+    logger.info("Split: %d train, %d eval", len(split["train"]), len(split["test"]))
+    return split["train"], split["test"]
+
+
+def build_chat_messages(instruction: str, response: str | None = None) -> list[dict]:
+    """Build chat messages in the standard messages format.
+
+    If response is provided (training), returns the full conversation.
+    If response is None (inference), returns only system + user messages.
     """
-    return template.format_map(sample)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": instruction},
+    ]
+    if response is not None:
+        messages.append({"role": "assistant", "content": response})
+    return messages
 
 
-def preprocess_dataset(
+def format_dataset_for_sft(
     dataset: Dataset,
     tokenizer: PreTrainedTokenizer,
     config: dict,
 ) -> Dataset:
-    """Tokenize and format the dataset for SFT training."""
-    max_length = config["training"].get("max_seq_length", 2048)
-    template = config["dataset"].get("template")
+    """Format each example as a full chat conversation string for SFT.
 
-    def tokenize(examples):
-        if template:
-            texts = [format_instruction(ex, template) for ex in _iter_rows(examples)]
-        else:
-            text_field = config["dataset"].get("text_field", "text")
-            texts = examples[text_field]
+    Uses the tokenizer's built-in chat template (Llama, Mistral, etc.)
+    to produce the correctly formatted training text.
+    """
+    instruction_field = config["dataset"].get("instruction_field", "instruction")
+    response_field = config["dataset"].get("response_field", "response")
 
-        return tokenizer(
-            texts,
-            truncation=True,
-            max_length=max_length,
-            padding=False,
-        )
+    def apply_template(examples):
+        texts = []
+        for inst, resp in zip(examples[instruction_field], examples[response_field]):
+            messages = build_chat_messages(inst, resp)
+            text = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+            texts.append(text)
+        return {"text": texts}
 
-    return dataset.map(
-        tokenize,
+    formatted = dataset.map(
+        apply_template,
         batched=True,
         remove_columns=dataset.column_names,
-        desc="Tokenizing",
+        desc="Formatting chat templates",
     )
+    logger.info("Formatted %d examples with chat template", len(formatted))
+    return formatted
 
 
-def _iter_rows(batch: dict) -> list[dict]:
-    """Convert a columnar batch dict into a list of row dicts."""
-    keys = list(batch.keys())
-    return [
-        {k: batch[k][i] for k in keys}
-        for i in range(len(batch[keys[0]]))
-    ]
+def format_instruction(sample: dict, template: str) -> str:
+    """Apply a plain-text template to a single sample (legacy support)."""
+    return template.format_map(sample)

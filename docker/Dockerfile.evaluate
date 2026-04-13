@@ -1,0 +1,17 @@
+FROM registry.access.redhat.com/ubi9/python-312:latest
+
+LABEL name="kcs-classifier/evaluate" \
+      description="Evaluate a trained classifier and produce metrics"
+
+USER 0
+RUN pip install --no-cache-dir \
+    torch \
+    transformers \
+    datasets
+USER 1001
+
+COPY src/evaluate_model.py /opt/app-root/src/evaluate_model.py
+
+WORKDIR /opt/app-root/src
+
+ENTRYPOINT ["python", "evaluate_model.py"]

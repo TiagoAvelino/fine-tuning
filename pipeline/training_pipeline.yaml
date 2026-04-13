@@ -1,0 +1,357 @@
+# PIPELINE DEFINITION
+# Name: kcs-classifier-training
+# Description: Prepare data, train, evaluate, and upload an OpenShift issue classifier
+# Inputs:
+#    learning_rate: str [Default: '0.00002']
+#    model_name: str [Default: 'distilbert-base-uncased']
+#    num_epochs: str [Default: '10']
+#    s3_dataset_key: str [Default: 'data/ocp-issues-v2.csv']
+#    s3_model_prefix: str [Default: 'kcs-classifier/latest']
+#    seed: str [Default: '42']
+#    test_size: str [Default: '0.2']
+#    train_batch_size: str [Default: '16']
+components:
+  comp-download-dataset:
+    executorLabel: exec-download-dataset
+    inputDefinitions:
+      parameters:
+        s3_key:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        dataset_file:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-evaluate-model:
+    executorLabel: exec-evaluate-model
+    inputDefinitions:
+      artifacts:
+        model_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+        splits_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        eval_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-prepare-dataset:
+    executorLabel: exec-prepare-dataset
+    inputDefinitions:
+      artifacts:
+        input_file:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+      parameters:
+        seed:
+          parameterType: STRING
+        test_size:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        output_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-train-model:
+    executorLabel: exec-train-model
+    inputDefinitions:
+      artifacts:
+        splits_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+      parameters:
+        learning_rate:
+          parameterType: STRING
+        model_name:
+          parameterType: STRING
+        num_epochs:
+          parameterType: STRING
+        seed:
+          parameterType: STRING
+        train_batch_size:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        model_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-upload-model:
+    executorLabel: exec-upload-model
+    inputDefinitions:
+      artifacts:
+        model_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+      parameters:
+        prefix:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-download-dataset:
+      container:
+        args:
+        - mkdir -p $(dirname "$1") && python3 -c 'import boto3,os,sys;from botocore.client
+          import Config;out=sys.argv[1];key=sys.argv[2];os.makedirs(os.path.dirname(out)
+          or ".",exist_ok=True);s3=boto3.client("s3",endpoint_url=os.environ["AWS_S3_ENDPOINT"],aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],config=Config(signature_version="s3v4"));bucket=os.environ.get("AWS_S3_BUCKET","fine-tuning");s3.download_file(bucket,key,out);print(f"Downloaded
+          s3://{bucket}/{key} ({os.path.getsize(out)} bytes)")' "$1" "$2"
+        - --
+        - '{{$.outputs.artifacts[''dataset_file''].path}}'
+        - '{{$.inputs.parameters[''s3_key'']}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/kcs-classifier-upload-artifacts:latest
+    exec-evaluate-model:
+      container:
+        args:
+        - python evaluate_model.py --model-dir "$1" --eval-file "$2/eval.csv" --output-dir
+          "$3"
+        - --
+        - '{{$.inputs.artifacts[''model_dir''].path}}'
+        - '{{$.inputs.artifacts[''splits_dir''].path}}'
+        - '{{$.outputs.artifacts[''eval_dir''].path}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/kcs-classifier-evaluate:latest
+    exec-prepare-dataset:
+      container:
+        args:
+        - --input-file
+        - '{{$.inputs.artifacts[''input_file''].path}}'
+        - --output-dir
+        - '{{$.outputs.artifacts[''output_dir''].path}}'
+        - --test-size
+        - '{{$.inputs.parameters[''test_size'']}}'
+        - --seed
+        - '{{$.inputs.parameters[''seed'']}}'
+        command:
+        - python
+        - prepare_dataset.py
+        image: quay.io/rh_ee_tavelino/kcs-classifier-prepare-dataset:latest
+    exec-train-model:
+      container:
+        args:
+        - python train_classifier.py --train-file "$1/train.csv" --eval-file "$1/eval.csv"
+          --model-name "$2" --output-dir "$3" --num-epochs "$4" --train-batch-size
+          "$5" --learning-rate "$6" --seed "$7"
+        - --
+        - '{{$.inputs.artifacts[''splits_dir''].path}}'
+        - '{{$.inputs.parameters[''model_name'']}}'
+        - '{{$.outputs.artifacts[''model_dir''].path}}'
+        - '{{$.inputs.parameters[''num_epochs'']}}'
+        - '{{$.inputs.parameters[''train_batch_size'']}}'
+        - '{{$.inputs.parameters[''learning_rate'']}}'
+        - '{{$.inputs.parameters[''seed'']}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/kcs-classifier-train:latest
+        resources:
+          accelerator:
+            count: '1'
+            resourceCount: '1'
+            resourceType: nvidia.com/gpu
+            type: nvidia.com/gpu
+    exec-upload-model:
+      container:
+        args:
+        - python upload_artifacts.py --local-dir "$1" --bucket "${AWS_S3_BUCKET:-fine-tuning}"
+          --prefix "$2"
+        - --
+        - '{{$.inputs.artifacts[''model_dir''].path}}'
+        - '{{$.inputs.parameters[''prefix'']}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/kcs-classifier-upload-artifacts:latest
+pipelineInfo:
+  description: Prepare data, train, evaluate, and upload an OpenShift issue classifier
+  name: kcs-classifier-training
+root:
+  dag:
+    tasks:
+      download-dataset:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-download-dataset
+        inputs:
+          parameters:
+            s3_key:
+              componentInputParameter: s3_dataset_key
+        taskInfo:
+          name: download-dataset
+      evaluate-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-evaluate-model
+        dependentTasks:
+        - prepare-dataset
+        - train-model
+        inputs:
+          artifacts:
+            model_dir:
+              taskOutputArtifact:
+                outputArtifactKey: model_dir
+                producerTask: train-model
+            splits_dir:
+              taskOutputArtifact:
+                outputArtifactKey: output_dir
+                producerTask: prepare-dataset
+        taskInfo:
+          name: evaluate-model
+      prepare-dataset:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-prepare-dataset
+        dependentTasks:
+        - download-dataset
+        inputs:
+          artifacts:
+            input_file:
+              taskOutputArtifact:
+                outputArtifactKey: dataset_file
+                producerTask: download-dataset
+          parameters:
+            seed:
+              componentInputParameter: seed
+            test_size:
+              componentInputParameter: test_size
+        taskInfo:
+          name: prepare-dataset
+      train-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train-model
+        dependentTasks:
+        - prepare-dataset
+        inputs:
+          artifacts:
+            splits_dir:
+              taskOutputArtifact:
+                outputArtifactKey: output_dir
+                producerTask: prepare-dataset
+          parameters:
+            learning_rate:
+              componentInputParameter: learning_rate
+            model_name:
+              componentInputParameter: model_name
+            num_epochs:
+              componentInputParameter: num_epochs
+            seed:
+              componentInputParameter: seed
+            train_batch_size:
+              componentInputParameter: train_batch_size
+        taskInfo:
+          name: train-model
+      upload-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-upload-model
+        dependentTasks:
+        - evaluate-model
+        - train-model
+        inputs:
+          artifacts:
+            model_dir:
+              taskOutputArtifact:
+                outputArtifactKey: model_dir
+                producerTask: train-model
+          parameters:
+            prefix:
+              componentInputParameter: s3_model_prefix
+        taskInfo:
+          name: upload-model
+  inputDefinitions:
+    parameters:
+      learning_rate:
+        defaultValue: '0.00002'
+        isOptional: true
+        parameterType: STRING
+      model_name:
+        defaultValue: distilbert-base-uncased
+        isOptional: true
+        parameterType: STRING
+      num_epochs:
+        defaultValue: '10'
+        isOptional: true
+        parameterType: STRING
+      s3_dataset_key:
+        defaultValue: data/ocp-issues-v2.csv
+        isOptional: true
+        parameterType: STRING
+      s3_model_prefix:
+        defaultValue: kcs-classifier/latest
+        isOptional: true
+        parameterType: STRING
+      seed:
+        defaultValue: '42'
+        isOptional: true
+        parameterType: STRING
+      test_size:
+        defaultValue: '0.2'
+        isOptional: true
+        parameterType: STRING
+      train_batch_size:
+        defaultValue: '16'
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.0
+---
+platforms:
+  kubernetes:
+    deploymentSpec:
+      executors:
+        exec-download-dataset:
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_S3_ENDPOINT
+              secretKey: AWS_S3_ENDPOINT
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: AWS_ACCESS_KEY_ID
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: AWS_SECRET_ACCESS_KEY
+            - envVar: AWS_DEFAULT_REGION
+              secretKey: AWS_DEFAULT_REGION
+            - envVar: AWS_S3_BUCKET
+              secretKey: AWS_S3_BUCKET
+            optional: false
+            secretName: minio-s3-connection
+            secretNameParameter:
+              runtimeValue:
+                constant: minio-s3-connection
+        exec-upload-model:
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_S3_ENDPOINT
+              secretKey: AWS_S3_ENDPOINT
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: AWS_ACCESS_KEY_ID
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: AWS_SECRET_ACCESS_KEY
+            - envVar: AWS_DEFAULT_REGION
+              secretKey: AWS_DEFAULT_REGION
+            - envVar: AWS_S3_BUCKET
+              secretKey: AWS_S3_BUCKET
+            optional: false
+            secretName: minio-s3-connection
+            secretNameParameter:
+              runtimeValue:
+                constant: minio-s3-connection

@@ -1,0 +1,14 @@
+FROM registry.access.redhat.com/ubi9/python-312:latest
+
+LABEL name="kcs-classifier/prepare-dataset" \
+      description="Validate and split CSV dataset for classifier training"
+
+USER 0
+RUN pip install --no-cache-dir datasets
+USER 1001
+
+COPY src/prepare_dataset.py /opt/app-root/src/prepare_dataset.py
+
+WORKDIR /opt/app-root/src
+
+ENTRYPOINT ["python", "prepare_dataset.py"]

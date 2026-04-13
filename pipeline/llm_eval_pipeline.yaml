@@ -1,0 +1,300 @@
+# PIPELINE DEFINITION
+# Name: ocp-llm-evaluation
+# Description: Evaluate base TinyLlama vs fine-tuned LoRA adapter on OpenShift troubleshooting
+# Inputs:
+#    base_model: str [Default: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0']
+#    num_samples: str [Default: '50']
+#    s3_adapter_prefix: str [Default: 'ocp-llm/tinyllama-qlora/latest/final']
+#    s3_bucket: str [Default: 'pipelines']
+#    s3_dataset_key: str [Default: 'data/ocp-instructions.jsonl']
+#    s3_results_prefix: str [Default: 'ocp-llm/eval/latest']
+components:
+  comp-download-adapter:
+    executorLabel: exec-download-adapter
+    inputDefinitions:
+      parameters:
+        s3_bucket:
+          parameterType: STRING
+        s3_prefix:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        adapter_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-download-file:
+    executorLabel: exec-download-file
+    inputDefinitions:
+      parameters:
+        s3_bucket:
+          parameterType: STRING
+        s3_key:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        output_file:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-evaluate-llm:
+    executorLabel: exec-evaluate-llm
+    inputDefinitions:
+      artifacts:
+        adapter_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+        dataset_file:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+      parameters:
+        base_model:
+          parameterType: STRING
+        num_samples:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        eval_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-upload-results:
+    executorLabel: exec-upload-results
+    inputDefinitions:
+      artifacts:
+        eval_dir:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+      parameters:
+        prefix:
+          parameterType: STRING
+        s3_bucket:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-download-adapter:
+      container:
+        args:
+        - mkdir -p "$1" && python3 -c 'import boto3,os,sys;from botocore.client import
+          Config;out_dir=sys.argv[1];bucket=sys.argv[2];prefix=sys.argv[3];s3=boto3.client("s3",endpoint_url=os.environ["AWS_S3_ENDPOINT"],aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],config=Config(signature_version="s3v4"));resp=s3.list_objects_v2(Bucket=bucket,Prefix=prefix);files=resp.get("Contents",[]);print(f"Found
+          {len(files)} files under s3://{bucket}/{prefix}");[s3.download_file(bucket,f["Key"],os.path.join(out_dir,os.path.relpath(f["Key"],prefix)))
+          or os.makedirs(os.path.dirname(os.path.join(out_dir,os.path.relpath(f["Key"],prefix))),exist_ok=True)
+          or None for f in files if not f["Key"].endswith("/")];print(f"Downloaded
+          {len(files)} files to {out_dir}")' "$1" "$2" "$3"
+        - --
+        - '{{$.outputs.artifacts[''adapter_dir''].path}}'
+        - '{{$.inputs.parameters[''s3_bucket'']}}'
+        - '{{$.inputs.parameters[''s3_prefix'']}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/ocp-llm-upload:latest
+    exec-download-file:
+      container:
+        args:
+        - mkdir -p $(dirname "$1") && python3 -c 'import boto3,os,sys;from botocore.client
+          import Config;out=sys.argv[1];bucket=sys.argv[2];key=sys.argv[3];os.makedirs(os.path.dirname(out)
+          or ".",exist_ok=True);s3=boto3.client("s3",endpoint_url=os.environ["AWS_S3_ENDPOINT"],aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],config=Config(signature_version="s3v4"));s3.download_file(bucket,key,out);print(f"Downloaded
+          s3://{bucket}/{key} ({os.path.getsize(out)} bytes)")' "$1" "$2" "$3"
+        - --
+        - '{{$.outputs.artifacts[''output_file''].path}}'
+        - '{{$.inputs.parameters[''s3_bucket'']}}'
+        - '{{$.inputs.parameters[''s3_key'']}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/ocp-llm-upload:latest
+    exec-evaluate-llm:
+      container:
+        args:
+        - python -m src.evaluate_llm --base-model "$1" --adapter "$2" --dataset "$3"
+          --output-dir "$4" --num-samples "$5"
+        - --
+        - '{{$.inputs.parameters[''base_model'']}}'
+        - '{{$.inputs.artifacts[''adapter_dir''].path}}'
+        - '{{$.inputs.artifacts[''dataset_file''].path}}'
+        - '{{$.outputs.artifacts[''eval_dir''].path}}'
+        - '{{$.inputs.parameters[''num_samples'']}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/ocp-llm-evaluate:latest
+        resources:
+          accelerator:
+            count: '1'
+            resourceCount: '1'
+            resourceType: nvidia.com/gpu
+            type: nvidia.com/gpu
+    exec-upload-results:
+      container:
+        args:
+        - python upload_artifacts.py --local-dir "$1" --bucket "$2" --prefix "$3"
+        - --
+        - '{{$.inputs.artifacts[''eval_dir''].path}}'
+        - '{{$.inputs.parameters[''s3_bucket'']}}'
+        - '{{$.inputs.parameters[''prefix'']}}'
+        command:
+        - sh
+        - -c
+        image: quay.io/rh_ee_tavelino/ocp-llm-upload:latest
+pipelineInfo:
+  description: Evaluate base TinyLlama vs fine-tuned LoRA adapter on OpenShift troubleshooting
+  name: ocp-llm-evaluation
+root:
+  dag:
+    tasks:
+      download-adapter:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-download-adapter
+        inputs:
+          parameters:
+            s3_bucket:
+              componentInputParameter: s3_bucket
+            s3_prefix:
+              componentInputParameter: s3_adapter_prefix
+        taskInfo:
+          name: download-adapter
+      download-file:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-download-file
+        inputs:
+          parameters:
+            s3_bucket:
+              componentInputParameter: s3_bucket
+            s3_key:
+              componentInputParameter: s3_dataset_key
+        taskInfo:
+          name: download-file
+      evaluate-llm:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-evaluate-llm
+        dependentTasks:
+        - download-adapter
+        - download-file
+        inputs:
+          artifacts:
+            adapter_dir:
+              taskOutputArtifact:
+                outputArtifactKey: adapter_dir
+                producerTask: download-adapter
+            dataset_file:
+              taskOutputArtifact:
+                outputArtifactKey: output_file
+                producerTask: download-file
+          parameters:
+            base_model:
+              componentInputParameter: base_model
+            num_samples:
+              componentInputParameter: num_samples
+        taskInfo:
+          name: evaluate-llm
+      upload-results:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-upload-results
+        dependentTasks:
+        - evaluate-llm
+        inputs:
+          artifacts:
+            eval_dir:
+              taskOutputArtifact:
+                outputArtifactKey: eval_dir
+                producerTask: evaluate-llm
+          parameters:
+            prefix:
+              componentInputParameter: s3_results_prefix
+            s3_bucket:
+              componentInputParameter: s3_bucket
+        taskInfo:
+          name: upload-results
+  inputDefinitions:
+    parameters:
+      base_model:
+        defaultValue: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+        isOptional: true
+        parameterType: STRING
+      num_samples:
+        defaultValue: '50'
+        isOptional: true
+        parameterType: STRING
+      s3_adapter_prefix:
+        defaultValue: ocp-llm/tinyllama-qlora/latest/final
+        isOptional: true
+        parameterType: STRING
+      s3_bucket:
+        defaultValue: pipelines
+        isOptional: true
+        parameterType: STRING
+      s3_dataset_key:
+        defaultValue: data/ocp-instructions.jsonl
+        isOptional: true
+        parameterType: STRING
+      s3_results_prefix:
+        defaultValue: ocp-llm/eval/latest
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.0
+---
+platforms:
+  kubernetes:
+    deploymentSpec:
+      executors:
+        exec-download-adapter:
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_S3_ENDPOINT
+              secretKey: AWS_S3_ENDPOINT
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: AWS_ACCESS_KEY_ID
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: AWS_SECRET_ACCESS_KEY
+            - envVar: AWS_DEFAULT_REGION
+              secretKey: AWS_DEFAULT_REGION
+            optional: false
+            secretName: minio-s3-connection
+            secretNameParameter:
+              runtimeValue:
+                constant: minio-s3-connection
+        exec-download-file:
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_S3_ENDPOINT
+              secretKey: AWS_S3_ENDPOINT
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: AWS_ACCESS_KEY_ID
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: AWS_SECRET_ACCESS_KEY
+            - envVar: AWS_DEFAULT_REGION
+              secretKey: AWS_DEFAULT_REGION
+            optional: false
+            secretName: minio-s3-connection
+            secretNameParameter:
+              runtimeValue:
+                constant: minio-s3-connection
+        exec-upload-results:
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: AWS_S3_ENDPOINT
+              secretKey: AWS_S3_ENDPOINT
+            - envVar: AWS_ACCESS_KEY_ID
+              secretKey: AWS_ACCESS_KEY_ID
+            - envVar: AWS_SECRET_ACCESS_KEY
+              secretKey: AWS_SECRET_ACCESS_KEY
+            - envVar: AWS_DEFAULT_REGION
+              secretKey: AWS_DEFAULT_REGION
+            optional: false
+            secretName: minio-s3-connection
+            secretNameParameter:
+              runtimeValue:
+                constant: minio-s3-connection

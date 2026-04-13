@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# Launch fine-tuning with a YAML config file.
+# Launch LLM fine-tuning with a YAML config file.
 #
 # Usage:
-#   ./scripts/train.sh config/qlora_example.yaml
-#
-# For multi-GPU training:
-#   ./scripts/train_multi_gpu.sh config/qlora_example.yaml
+#   ./scripts/train.sh                                # default: TinyLlama QLoRA
+#   ./scripts/train.sh config/ocp-instruct.yaml       # explicit config
+#   ./scripts/train.sh config/ocp-instruct-mistral.yaml
 
 set -euo pipefail
 
-CONFIG="${1:?Usage: $0 <config.yaml>}"
+CONFIG="${1:-config/ocp-instruct.yaml}"
 
-echo "=== Fine-tuning started ==="
+echo "=== LLM Fine-tuning started ==="
 echo "Config: ${CONFIG}"
 echo "GPUs available: $(nvidia-smi -L 2>/dev/null | wc -l || echo 'none detected')"
 echo ""

@@ -1,0 +1,26 @@
+FROM registry.access.redhat.com/ubi9/python-312:latest
+
+LABEL name="ocp-llm/evaluate" \
+      description="Evaluate base vs fine-tuned LLM on OpenShift troubleshooting"
+
+USER 0
+
+RUN pip install --no-cache-dir \
+    torch \
+    transformers \
+    peft \
+    accelerate \
+    bitsandbytes \
+    safetensors \
+    sentencepiece \
+    protobuf
+
+USER 1001
+
+COPY src/evaluate_llm.py /opt/app-root/src/src/evaluate_llm.py
+COPY src/__init__.py     /opt/app-root/src/src/__init__.py
+COPY src/data.py         /opt/app-root/src/src/data.py
+
+WORKDIR /opt/app-root/src
+
+ENTRYPOINT ["python", "-m", "src.evaluate_llm"]

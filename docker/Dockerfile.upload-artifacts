@@ -1,0 +1,14 @@
+FROM registry.access.redhat.com/ubi9/python-312:latest
+
+LABEL name="kcs-classifier/upload-artifacts" \
+      description="Upload model artifacts to S3/MinIO"
+
+USER 0
+RUN pip install --no-cache-dir boto3
+USER 1001
+
+COPY src/upload_artifacts.py /opt/app-root/src/upload_artifacts.py
+
+WORKDIR /opt/app-root/src
+
+ENTRYPOINT ["python", "upload_artifacts.py"]
